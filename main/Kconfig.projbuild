@@ -1,0 +1,47 @@
+menu "My App Configuration"
+    config MY_APP_VERSION
+        string "Application Version"
+        default "1.0.0"
+        help
+            Version string of the application
+
+    menu "LED Configuration"
+        config MY_APP_LED_GPIO
+            int "LED GPIO Pin"
+            default 2
+            help
+                GPIO pin number for LED control
+
+        config MY_APP_LED_ACTIVE_LEVEL
+            bool "LED Active Level (1=HIGH, 0=LOW)"
+            default y
+            help
+                Set LED active level. High (1) or Low (0)
+    endmenu
+
+    menu "UART Configuration"
+        config MY_APP_UART_PORT
+            int "UART Port Number"
+            default 0
+            help
+                UART port number (0=UART0, 1=UART1, etc)
+
+        config MY_APP_UART_BAUD_RATE
+            int "UART Baud Rate"
+            default 115200
+            help
+                UART communication baud rate
+
+        config MY_APP_UART_TX_PIN
+            int "UART TX GPIO Pin"
+            default 1
+            help
+                GPIO pin number for UART TX
+
+        config MY_APP_UART_RX_PIN
+            int "UART RX GPIO Pin"
+            default 3
+            help
+                GPIO pin number for UART RX
+    endmenu
+endmenu
