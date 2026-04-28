@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include "sdkconfig.h"
 #include "portmacro.h"
+#include "ParseGps.h"
 // static const int RX_BUF_SIZE = 128;
 static const char *APP_TAG = "APP_MAIN";
 
@@ -25,138 +26,9 @@ static const char *APP_TAG = "APP_MAIN";
 #define RXD_PIN CONFIG_MY_APP_UART_RX_PIN
 
 #define BUF_SIZE (1024)
-#define GPS_BUF_SIZE 256
+
 static QueueHandle_t event_queue;
-typedef struct
-{
-    float latitude;
-    float longitude;
-    float speed_knots;
-    float course;
-    char status;
-    uint8_t hour;
-    uint8_t minute;
-    uint8_t second;
-    uint8_t day;
-    uint8_t month;
-    uint16_t year;
-    bool valid;
-} gps_data_t;
-static gps_data_t gps = {0};
 
-bool gps_validate_checksum(const char *nmea_sentence)
-{
-    // Tính checksum bằng cách XOR tất cả ký tự giữa '$' và '*'
-    uint8_t checksum = 0;
-    const char *ptr = nmea_sentence + 1; // Bỏ qua ký tự '$'
-
-    while (*ptr && *ptr != '*')
-    {
-        checksum ^= (uint8_t)(*ptr);
-        ptr++;
-    }
-
-    if (*ptr == '*')
-    {
-        uint8_t received_checksum = (uint8_t)strtol(ptr + 1, NULL, 16);
-        return checksum == received_checksum;
-    }
-    return false; // Không tìm thấy '*' hoặc lỗi định dạng
-}
-bool gps_parse_sentence(const char *nmea_sentence, gps_data_t *gps_data)
-{
-    if (!gps_validate_checksum(nmea_sentence))
-    {
-        ESP_LOGE("GPS", "Invalid checksum");
-        return false;
-    }
-
-    if (strlen(nmea_sentence) < 6 || nmea_sentence[0] != '$')
-    {
-        ESP_LOGE("GPS", "Invalid NMEA sentence");
-        return false;
-    }
-
-    // Ví dụ chỉ parse câu GPRMC
-    if (strncmp(nmea_sentence, "$GNRMC", 6) == 0)
-    {
-        char *token;
-        char sentence_copy[GPS_BUF_SIZE];
-        strncpy(sentence_copy, nmea_sentence, GPS_BUF_SIZE);
-        token = strtok(sentence_copy, ",");
-        int field_index = 0;
-
-        while (token != NULL)
-        {
-            switch (field_index)
-            {
-            case 1: // Time
-                if (strlen(token) >= 6)
-                {
-                    gps_data->hour = (token[0] - '0') * 10 + (token[1] - '0');
-                    gps_data->minute = (token[2] - '0') * 10 + (token[3] - '0');
-                    gps_data->second = (token[4] - '0') * 10 + (token[5] - '0');
-                }
-                break;
-            case 2: // Status
-                if (token[0] == 'A')
-                {
-                    gps_data->valid = true;
-                    gps_data->status = token[0];
-                }
-
-                else
-                {
-                    gps_data->valid = false;
-                    ESP_LOGW("GPS", "No fix");
-                    token = NULL;
-                    return false;
-                }
-
-                break;
-            case 3: // Latitude
-                gps_data->latitude = atof(token);
-                break;
-            case 4: // N/S
-                if (token[0] == 'S')
-                    gps_data->latitude = -gps_data->latitude;
-                break;
-            case 5: // Longitude
-                gps_data->longitude = atof(token);
-                break;
-            case 6: // E/W
-                if (token[0] == 'W')
-                    gps_data->longitude = -gps_data->longitude;
-                break;
-            case 7: // Speed in knots
-                gps_data->speed_knots = atof(token);
-                break;
-            case 8: // Course
-                gps_data->course = atof(token);
-                break;
-            case 9: // Date
-                if (strlen(token) >= 6)
-                {
-                    gps_data->day = (token[0] - '0') * 10 + (token[1] - '0');
-                    gps_data->month = (token[2] - '0') * 10 + (token[3] - '0');
-                    gps_data->year = (token[4] - '0') * 10 + (token[5] - '0') + 2000; // Giả sử năm 2000+
-                }
-                break;
-            default:
-
-                break;
-            }
-            token = strtok(NULL, ",");
-            field_index++;
-        }
-        return true;
-    }
-    else
-    {
-        ESP_LOGE("GPS", "Unsupported NMEA sentence");
-        return false;
-    }
-}
 typedef struct
 {
     int len;
@@ -303,87 +175,109 @@ static int modbus_get_frame_len(uint8_t *buf, int len)
 #define RX_ACC_BUF_SIZE 512
 static void uart_process_task(void *pvParameters)
 {
-    uart_packet_t pkt;
+    static char gps_buf[GPS_BUF_SIZE];
+    static int gps_len = 0;
 
-    static uint8_t acc_buf[RX_ACC_BUF_SIZE];
-    static int acc_len = 0;
+    uart_packet_t pkt;
 
     for (;;)
     {
         if (xQueueReceive(data_queue, &pkt, portMAX_DELAY))
         {
+            for (int i = 0; i < pkt.len; i++)
+            {
+                // printf("%02X ", pkt.data[i]);
+                char c = (char)pkt.data[i];
+                if (c == '\n')
+                {
+                    gps_buf[gps_len] = '\0';
+                    gps_process_line(gps_buf); // xử lý 1 line hoàn chỉnh
+                    gps_len = 0;
+                }
+                else if (c == '$')
+                {
+                    gps_buf[0] = '$';
+                    gps_len = 1;
+                }
+                else if (c != '\r')
+                {
+                    if (gps_len < GPS_BUF_SIZE - 1)
+                        gps_buf[gps_len++] = c;
+                    else
+                    {
+                        ESP_LOGW("GPS", "Line overflow, reset");
+                        gps_len = 0;
+                    }
+                }
+               
+            }
+             free(pkt.data);
+            // 
             // append data
             // ESP_LOGI("data", "in queue, pkt len=%d, acc_len=%d", pkt.len, acc_len);
             // ESP_LOG_BUFFER_HEX("data", pkt.data, pkt.len);
-            if (pkt.data[0] == '$')
-            {
-                ESP_LOGI("data", "NMEA sentence received, try parse");
-                gps_data_t gps_data;
-                if (gps_parse_sentence((char *)pkt.data, &gps_data))
-                {
-                    ESP_LOGI("GPS", "Parsed GPS data: Lat=%.6f, Lon=%.6f, Speed=%.2f knots, Course=%.2f, Status=%c, Time=%02d:%02d:%02d, Date=%02d/%02d/%04d",
-                             gps_data.latitude, gps_data.longitude, gps_data.speed_knots,
-                             gps_data.course, gps_data.status, gps_data.hour,
-                             gps_data.minute, gps_data.second, gps_data.day,
-                             gps_data.month, gps_data.year);
-                }
-            }
-            else
-            {
-                if (acc_len + pkt.len > RX_ACC_BUF_SIZE)
-                {
-                    acc_len = 0; // reset nếu overflow
-                }
+            // if (pkt.data[0] == '$')
+            // {
+            //     ESP_LOGI("data", "NMEA sentence received, try parse");
+            //     gps_process_line((char *)pkt.data);
+            //     free(pkt.data);
+            // }
+            // else
+            // {
+            //     if (acc_len + pkt.len > RX_ACC_BUF_SIZE)
+            //     {
+            //         acc_len = 0; // reset nếu overflow
+            //     }
 
-                memcpy(&acc_buf[acc_len], pkt.data, pkt.len);
-                acc_len += pkt.len;
+            //     memcpy(&acc_buf[acc_len], pkt.data, pkt.len);
+            //     acc_len += pkt.len;
 
-                free(pkt.data);
+            //     free(pkt.data);
 
-                // parse loop
-                int offset = 0;
+            //     // parse loop
+            //     int offset = 0;
 
-                while (1)
-                {
-                    int frame_len = modbus_get_frame_len(&acc_buf[offset], acc_len - offset);
+            //     while (1)
+            //     {
+            //         int frame_len = modbus_get_frame_len(&acc_buf[offset], acc_len - offset);
 
-                    if (frame_len == 0 || (acc_len - offset) < frame_len)
-                    {
-                        break; // chưa đủ data
-                    }
+            //         if (frame_len == 0 || (acc_len - offset) < frame_len)
+            //         {
+            //             break; // chưa đủ data
+            //         }
 
-                    // check CRC
-                    uint16_t crc_calc = modbus_crc16(&acc_buf[offset], frame_len - 2);
+            //         // check CRC
+            //         uint16_t crc_calc = modbus_crc16(&acc_buf[offset], frame_len - 2);
 
-                    uint16_t crc_recv = acc_buf[offset + frame_len - 2] |
-                                        (acc_buf[offset + frame_len - 1] << 8);
-                    ESP_LOGI("MODBUS", "Frame received, len=%d, CRC calc=0x%04X", frame_len, crc_calc);
-                    ESP_LOGI("MODBUS", "Received CRC: 0x%04X", crc_recv);
-                    if (crc_calc == crc_recv)
-                    {
-                        ESP_LOGI("MODBUS", "Frame OK, len=%d", frame_len);
+            //         uint16_t crc_recv = acc_buf[offset + frame_len - 2] |
+            //                             (acc_buf[offset + frame_len - 1] << 8);
+            //         ESP_LOGI("MODBUS", "Frame received, len=%d, CRC calc=0x%04X", frame_len, crc_calc);
+            //         ESP_LOGI("MODBUS", "Received CRC: 0x%04X", crc_recv);
+            //         if (crc_calc == crc_recv)
+            //         {
+            //             ESP_LOGI("MODBUS", "Frame OK, len=%d", frame_len);
 
-                        // 👉 xử lý frame ở đây
-                        // ví dụ echo lại
-                        uart_write_bytes(UART_NUM, (char *)&acc_buf[offset], frame_len);
-                    }
-                    else
-                    {
-                        ESP_LOGE("MODBUS", "CRC ERROR");
-                    }
+            //             // 👉 xử lý frame ở đây
+            //             // ví dụ echo lại
+            //             uart_write_bytes(UART_NUM, (char *)&acc_buf[offset], frame_len);
+            //         }
+            //         else
+            //         {
+            //             ESP_LOGE("MODBUS", "CRC ERROR");
+            //         }
 
-                    offset += frame_len;
-                }
+            //         offset += frame_len;
+            //     }
 
-                // shift buffer còn lại
-                if (offset > 0)
-                {
-                    memmove(acc_buf, &acc_buf[offset], acc_len - offset);
-                    acc_len -= offset;
-                }
-            }
-            UBaseType_t uxHighWaterMark = uxTaskGetStackHighWaterMark(NULL);
-            printf("Stack remain: %u bytes\n", uxHighWaterMark * sizeof(StackType_t));
+            //     // shift buffer còn lại
+            //     if (offset > 0)
+            //     {
+            //         memmove(acc_buf, &acc_buf[offset], acc_len - offset);
+            //         acc_len -= offset;
+            //     }
+            // }
+            // UBaseType_t uxHighWaterMark = uxTaskGetStackHighWaterMark(NULL);
+            // printf("Stack remain: %u bytes\n", uxHighWaterMark * sizeof(StackType_t));
         }
     }
 }
@@ -450,5 +344,5 @@ void app_main(void)
 
     // Create a task to handler UART event from ISR
     xTaskCreate(uart_event_task, "uart_event_task", 3072, NULL, 12, NULL);
-    xTaskCreate(uart_process_task, "uart_process_task", 4096, NULL, 11, NULL);
+    xTaskCreate(uart_process_task, "uart_process_task", 8192, NULL, 11, NULL);
 }
