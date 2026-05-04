@@ -19,29 +19,54 @@ menu "My App Configuration"
                 Set LED active level. High (1) or Low (0)
     endmenu
 
-    menu "UART Configuration"
-        config MY_APP_UART_PORT
+    menu "UART GPS Configuration"
+        config GPS_APP_UART_PORT
             int "UART Port Number"
-            default 0
+            default 1
             help
                 UART port number (0=UART0, 1=UART1, etc)
 
-        config MY_APP_UART_BAUD_RATE
+        config GPS_APP_UART_BAUD_RATE
             int "UART Baud Rate"
             default 115200
             help
                 UART communication baud rate
 
-        config MY_APP_UART_TX_PIN
+        config GPS_APP_UART_TX_PIN
             int "UART TX GPIO Pin"
-            default 1
+            default 21
             help
                 GPIO pin number for UART TX
 
-        config MY_APP_UART_RX_PIN
+        config GPS_APP_UART_RX_PIN
             int "UART RX GPIO Pin"
-            default 3
+            default 22
             help
                 GPIO pin number for UART RX
     endmenu
+    menu "UART Modbus Configuration"
+        config MODBUS_APP_UART_PORT
+            int "UART Port Number"
+            default 2
+            help
+                UART port number (0=UART0, 1=UART1, etc)
+
+        config MODBUS_APP_UART_BAUD_RATE
+            int "UART Baud Rate"
+            default 9600
+            help
+                UART communication baud rate
+
+        config MODBUS_APP_UART_TX_PIN
+            int "UART TX GPIO Pin"
+            default 17
+            help
+                GPIO pin number for UART TX
+
+        config MODBUS_APP_UART_RX_PIN
+            int "UART RX GPIO Pin"
+            default 16
+            help
+                GPIO pin number for UART RX
+        endmenu
 endmenu
