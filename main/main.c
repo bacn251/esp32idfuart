@@ -6,7 +6,6 @@
 #include "hal/gpio_types.h"
 #include "string.h"
 #include "driver/gpio.h"
-#include "unity_internals.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,6 +13,9 @@
 #include "portmacro.h"
 #include "ParseGps.h"
 #include "ParseModbus.h"
+#include "Wifi.h"
+#include "WifiConfig.h"
+#include "nvs_flash.h"
 // static const int RX_BUF_SIZE = 128;
 static const char *APP_TAG = "APP_MAIN";
 
@@ -266,6 +268,28 @@ void app_main(void)
     ESP_LOGI(APP_TAG, "UART Port: %d, Baud: %d, TX: %d, RX: %d",
              MODBUS_UART_NUM, MODBUS_UART_BAUD_RATE, MODBUS_TXD_PIN, MODBUS_RXD_PIN);
     ESP_LOGI(APP_TAG, "==========================================");
+
+    /* --- NVS init (required by WiFi driver) --- */
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND)
+    {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
+
+    /* --- WiFi init & connect (fallback to SoftAP on failure) --- */
+    ESP_LOGI(APP_TAG, "Initialising WiFi...");
+    wifi_init_sta();
+
+    if (isConnected) {
+        ESP_LOGI(APP_TAG, "[WiFi] Mode: STA  →  connected to \"%s\"", ESP_WIFI_SSID);
+    } else if (isAPMode) {
+        ESP_LOGW(APP_TAG, "[WiFi] Mode: SoftAP  →  SSID: \"%s\"  IP: 192.168.4.1", SOFTAP_SSID);
+        ESP_LOGW(APP_TAG, "[WiFi] Connect to \"%s\" to configure device.", SOFTAP_SSID);
+    } else {
+        ESP_LOGE(APP_TAG, "[WiFi] Unexpected state – no STA and no AP!");
+    }
     uart_init_config(&uart_gps, GPS_UART_NUM, GPS_UART_BAUD_RATE, GPS_TXD_PIN, GPS_RXD_PIN, UART_ROLE_GPS);
     uart_init_config(&uart_modbus, MODBUS_UART_NUM, MODBUS_UART_BAUD_RATE, MODBUS_TXD_PIN, MODBUS_RXD_PIN, UART_ROLE_MODBUS);
     xTaskCreate(uart_event_task, "uart_gps_event_task", 3072, &uart_gps, 12, NULL);
