@@ -15,9 +15,9 @@ esp_err_t wifi_nvs_load_credentials(char *ssid, size_t ssid_len,
 void wifi_nvs_clear_credentials(void);
 
 /* -------------------------------------------------------
- * HTTP config server  (chạy khi ở chế độ SoftAP)
- *   GET  /       → trang nhập SSID / password
- *   POST /save   → lưu NVS rồi restart
+ * HTTP config server  (runs when in SoftAP mode)
+ *   GET  /       → input page for SSID / password
+ *   POST /save   → save NVS then restart
  * ------------------------------------------------------- */
 void wifi_config_server_start(void);
 void wifi_config_server_stop(void);

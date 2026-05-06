@@ -36,16 +36,16 @@ static int nmea_tokenize(char *buf, char **tok, int max)
     {
         tok[count++] = p;
 
-        /* Tìm delimiter tiếp theo: ',' hoặc '*' */
+        /* Find next delimiter: ',' or '*' */
         char *end = p;
         while (*end && *end != ',' && *end != '*')
             end++;
 
         if (*end == '\0')
-            break; /* hết chuỗi */
+            break; /* end of string */
 
-        *end = '\0'; /* null-terminate token hiện tại */
-        p = end + 1; /* token tiếp theo bắt đầu ngay sau delimiter */
+        *end = '\0'; /* null-terminate current token */
+        p = end + 1; /* next token starts right after delimiter */
     }
 
     return count;
@@ -53,9 +53,9 @@ static int nmea_tokenize(char *buf, char **tok, int max)
 
 bool gps_validate_checksum(const char *nmea_sentence)
 {
-    // Tính checksum bằng cách XOR tất cả ký tự giữa '$' và '*'
+    // Calculate checksum by XORing all characters between '$' and '*'
     uint8_t checksum = 0;
-    const char *ptr = nmea_sentence + 1; // Bỏ qua ký tự '$'
+    const char *ptr = nmea_sentence + 1; // Skip '$' character
 
     while (*ptr && *ptr != '*')
     {
@@ -68,7 +68,7 @@ bool gps_validate_checksum(const char *nmea_sentence)
         uint8_t received_checksum = (uint8_t)strtol(ptr + 1, NULL, 16);
         return checksum == received_checksum;
     }
-    return false; // Không tìm thấy '*' hoặc lỗi định dạng
+    return false; // Did not find '*' or format error
 }
 void gps_process_line(const char *line)
 {
@@ -78,10 +78,10 @@ void gps_process_line(const char *line)
         return;
     }
 
-    // lấy 3 ký tự loại bản tin: $GNRMC → "RMC"
+    // get 3-character message type: $GNRMC → "RMC"
     if (strlen(line) < 6)
         return;
-    const char *msg_type = line + 3; // bỏ qua $GN / $GP / $GL / $GA / $GB
+    const char *msg_type = line + 3; // skip $GN / $GP / $GL / $GA / $GB
 
     char buf[GPS_BUF_SIZE];
     strncpy(buf, line, sizeof(buf) - 1);
@@ -89,7 +89,7 @@ void gps_process_line(const char *line)
     char *tok[30];
     int count = nmea_tokenize(buf, tok, 30);
 
-    // tìm handler
+    // find handler
     bool found = false;
     for (int i = 0; i < NMEA_TABLE_SIZE; i++)
     {
@@ -189,6 +189,6 @@ static void handle_zda(const char *s, char **tok, int count)
 
 static void handle_gst(const char *s, char **tok, int count)
 {
-    // error statistics - thường bỏ qua
+    // error statistics - usually skipped
     ESP_LOGI("GPS", "GST: lat_err=%s lon_err=%s", tok[6], tok[7]);
 }

@@ -13,13 +13,14 @@ EventGroupHandle_t s_wifi_event_group = NULL;
 int isConnected = 0; /* 1 = STA got IP        */
 int isAPMode = 0;    /* 1 = running as SoftAP */
 
-/* Retry counter – chỉ dùng cho lần kết nối đầu tiên */
+/* Retry counter – only for initial connection attempt */
 static int s_retry_num = 0;
 
-/* Đã từng kết nối thành công ít nhất 1 lần chưa.
- * Sau khi true → disconnect sẽ retry vô hạn (auto-reconnect). */
+/* Once true → disconnect will retry indefinitely (auto-reconnect).
+ * Enabled when:
+ *  a) Initial connection succeeded (IP_EVENT_STA_GOT_IP)
+ *  b) Initial retry exhausted → keep driver alive waiting for AP to come back */
 static bool s_sta_connected_once = false;
-static bool s_sta_frist_connecte_false = false;
 /* Track whether esp_wifi_init() has been called */
 static bool s_wifi_initialized = false;
 
@@ -38,29 +39,36 @@ static void event_handler(void *arg, esp_event_base_t event_base,
     {
         isConnected = 0;
 
-        if (s_sta_connected_once || s_sta_frist_connecte_false)
+        if (s_sta_connected_once)
         {
-            /* ---- Đã từng kết nối → mất mạng tạm thời → retry vô hạn ---- */
-            ESP_LOGW(TAG, "Disconnected. Auto-reconnecting in 1s...");
-            vTaskDelay(pdMS_TO_TICKS(1000));
+            /* ---- Infinite retry: already connected or exhausted initial retry ---- */
+            ESP_LOGW(TAG, "Disconnected. Auto-reconnecting in 3s...");
+            vTaskDelay(pdMS_TO_TICKS(3000));
             esp_wifi_connect();
         }
         else
         {
-            /* ---- Lần kết nối đầu tiên → retry có giới hạn ---- */
-            if (s_retry_num < ESP_MAXIMUM_RETRY)
+            /* ---- Initial connection attempt, limited retry ---- */
+            s_retry_num++;
+            if (s_retry_num <= ESP_MAXIMUM_RETRY)
             {
+                ESP_LOGI(TAG, "Retrying initial connection... (%d/%d)",
+                         s_retry_num, ESP_MAXIMUM_RETRY);
                 esp_wifi_connect();
-                s_retry_num++;
-                ESP_LOGI(TAG, "Retrying initial connection... (%d/%d)", s_retry_num,
-                         ESP_MAXIMUM_RETRY);
             }
             else
             {
+                /* Exhausted retry → report failure to wifi_connect_sta() */
                 xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
-                s_sta_frist_connecte_false = true;
                 ESP_LOGE(TAG, "Initial connection FAILED after %d retries.",
                          ESP_MAXIMUM_RETRY);
+
+                /* Switch to infinite retry mode – keep driver alive
+                 * waiting for AP to come back later (will auto-reconnect) */
+                s_sta_connected_once = true;
+                ESP_LOGW(TAG, "Switching to background retry (every 5s)...");
+                vTaskDelay(pdMS_TO_TICKS(5000));
+                esp_wifi_connect();
             }
         }
     }
@@ -68,9 +76,9 @@ static void event_handler(void *arg, esp_event_base_t event_base,
     {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
-        s_retry_num = 0;
-        s_sta_connected_once = true; /* bật chế độ auto-reconnect vô hạn */
-        isConnected = 1;
+        s_retry_num          = 0;
+        s_sta_connected_once = true; /* enable infinite auto-reconnect mode */
+        isConnected          = 1;
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
     }
 }
@@ -99,7 +107,7 @@ static void ap_event_handler(void *arg, esp_event_base_t event_base,
 }
 
 /* -------------------------------------------------------
- * wifi_driver_init()  – khởi tạo WiFi stack (1 lần duy nhất)
+ * wifi_driver_init()  – initialize WiFi stack (only once)
  * ------------------------------------------------------- */
 static void wifi_driver_init(void)
 {
@@ -119,13 +127,13 @@ static void wifi_driver_init(void)
 
 /* -------------------------------------------------------
  * wifi_start_softap()
- *   Khởi động SoftAP + HTTP config server.
+ *   Start SoftAP + HTTP config server.
  * ------------------------------------------------------- */
 void wifi_start_softap(void)
 {
     isAPMode = 1;
 
-    wifi_driver_init(); /* no-op nếu đã init */
+    wifi_driver_init(); /* no-op if already initialized */
 
     esp_netif_create_default_wifi_ap();
 
@@ -150,7 +158,7 @@ void wifi_start_softap(void)
     ESP_ERROR_CHECK(esp_wifi_start());
 
     ESP_LOGW(TAG_AP, "================================================");
-    ESP_LOGW(TAG_AP, " SoftAP started – cấu hình qua trình duyệt");
+    ESP_LOGW(TAG_AP, " SoftAP started – configure via web browser");
     ESP_LOGW(TAG_AP, " SSID     : %s", SOFTAP_SSID);
     ESP_LOGW(TAG_AP, " Password : %s",
              strlen(SOFTAP_PASS) ? SOFTAP_PASS : "(open)");
@@ -162,8 +170,8 @@ void wifi_start_softap(void)
 
 /* -------------------------------------------------------
  * wifi_connect_sta()
- *   Kết nối STA với SSID/pass cho trước.
- *   Trả về true nếu thành công.
+ *   Connect STA with given SSID/password.
+ *   Returns true on success.
  * ------------------------------------------------------- */
 static bool wifi_connect_sta(const char *ssid, const char *pass)
 {
@@ -171,8 +179,8 @@ static bool wifi_connect_sta(const char *ssid, const char *pass)
 
     esp_netif_create_default_wifi_sta();
 
-    /* Đăng ký handler KHÔNG unregister khi thành công –
-     * handler phải tồn tại suốt để xử lý auto-reconnect.   */
+    /* Register handler – do NOT unregister on success –
+     * handler must persist to handle auto-reconnect.   */
     ESP_ERROR_CHECK(esp_event_handler_instance_register(
         WIFI_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL, NULL));
     ESP_ERROR_CHECK(esp_event_handler_instance_register(
@@ -192,38 +200,38 @@ static bool wifi_connect_sta(const char *ssid, const char *pass)
     ESP_LOGI(TAG, "Connecting to '%s'  (max %d retries)...", ssid,
              ESP_MAXIMUM_RETRY);
 
-    /* Chờ kết quả lần kết nối đầu tiên */
+    /* Wait for initial connection result */
     EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
                                            WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
                                            pdFALSE, pdFALSE, portMAX_DELAY);
 
     if (bits & WIFI_CONNECTED_BIT)
     {
-        /* Handler GIỮ NGUYÊN → tự động reconnect khi mất mạng */
+        /* Handler persists → auto-reconnect on network loss */
         ESP_LOGI(TAG, "Connected to AP  SSID: '%s'", ssid);
         return true;
     }
 
-    /* Kết nối thất bại – handler không còn cần thiết */
+    /* Connection failed – handler no longer needed */
     ESP_LOGE(TAG, "Cannot connect to '%s'", ssid);
     return false;
 }
 
 /* -------------------------------------------------------
  * wifi_button_task()
- *   Background task – chạy suốt vòng đời ứng dụng.
+ *   Background task – runs for application lifetime.
  *
- *   Hành vi giống chuẩn product (Tasmota / ESPHome):
- *     - Poll GPIO0 mỗi AP_TRIGGER_POLL_MS ms
- *     - Nút nhấn (LOW) liên tục >= AP_TRIGGER_HOLD_MS
- *       → xóa WiFi credentials trong NVS
+ *   Behavior matches standard product (Tasmota / ESPHome):
+ *     - Poll GPIO0 every AP_TRIGGER_POLL_MS ms
+ *     - Button pressed (LOW) continuously >= AP_TRIGGER_HOLD_MS
+ *       → clear WiFi credentials in NVS
  *       → esp_restart()
- *       → boot lại, không có credentials → tự vào SoftAP
- *     - Nhả nút trước khi đủ thời gian → reset đếm, thử lại
+ *       → reboot without credentials → automatically enter SoftAP
+ *     - Release button before time elapsed → reset counter, retry
  * ------------------------------------------------------- */
 static void wifi_button_task(void *arg)
 {
-    /* Cấu hình GPIO0 input pull-up (BOOT button active-LOW) */
+    /* Configure GPIO0 input pull-up (BOOT button active-LOW) */
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << BOOT_BUTTON_GPIO),
         .mode = GPIO_MODE_INPUT,
@@ -247,7 +255,7 @@ static void wifi_button_task(void *arg)
 
         if (gpio_get_level(BOOT_BUTTON_GPIO) == 0)
         {
-            /* Nút đang giữ */
+            /* Button is held */
             held_ms += AP_TRIGGER_POLL_MS;
 
             int held_sec = held_ms / 1000;
@@ -258,7 +266,7 @@ static void wifi_button_task(void *arg)
                 if (remaining > 0)
                 {
                     ESP_LOGW(TAG_BTN,
-                             "BOOT held %ds / %ds – nhả để huỷ, tiếp tục giữ để vào AP "
+                             "BOOT held %ds / %ds – release to cancel, continue holding to enter AP "
                              "mode...",
                              held_sec, AP_TRIGGER_HOLD_MS / 1000);
                 }
@@ -266,21 +274,21 @@ static void wifi_button_task(void *arg)
 
             if (held_ms >= AP_TRIGGER_HOLD_MS)
             {
-                /* ---- Đủ thời gian → xóa NVS và restart ---- */
+                /* ---- Time reached → clear NVS and restart ---- */
                 ESP_LOGW(TAG_BTN,
-                         ">>> Xác nhận! Xóa WiFi credentials và khởi động lại... <<<");
+                         ">>> Confirmed! Clearing WiFi credentials and restarting... <<<");
                 wifi_nvs_clear_credentials();
-                vTaskDelay(pdMS_TO_TICKS(200)); /* chờ log flush */
+                vTaskDelay(pdMS_TO_TICKS(200)); /* wait for log flush */
                 esp_restart();
-                /* không bao giờ đến đây */
+                /* never reach here */
             }
         }
         else
         {
-            /* Nút nhả → reset đếm */
+            /* Button released → reset counter */
             if (held_ms > 0)
             {
-                ESP_LOGI(TAG_BTN, "Nút nhả (%dms) – huỷ. Giữ đủ %ds để vào AP mode.",
+                ESP_LOGI(TAG_BTN, "Button released (%dms) – cancelled. Hold for %ds to enter AP mode.",
                          held_ms, AP_TRIGGER_HOLD_MS / 1000);
                 held_ms = 0;
                 last_print_sec = -1;
@@ -291,35 +299,35 @@ static void wifi_button_task(void *arg)
 
 /* -------------------------------------------------------
  * wifi_button_monitor_start()
- *   Spawn background task – gọi 1 lần trong app_main()
- *   SAU khi wifi_start() trả về.
+ *   Spawn background task – call once in app_main()
+ *   AFTER wifi_start() returns.
  * ------------------------------------------------------- */
 void wifi_button_monitor_start(void)
 {
     xTaskCreate(wifi_button_task, "wifi_btn_task",
-                2048,    /* stack – đủ cho GPIO + log  */
-                NULL, 5, /* priority thấp, không ảnh hưởng task chính */
+                2048,    /* stack – sufficient for GPIO + logging  */
+                NULL, 5, /* low priority, does not impact main task */
                 NULL);
 }
 
 /* -------------------------------------------------------
- * wifi_start()  – entry point chính, gọi từ app_main()
+ * wifi_start()  – main entry point, called from app_main()
  *
- *  Luồng:
- *    [1] Đọc NVS:
- *          Không có → SoftAP (lần đầu cấu hình)
- *          Có       → kết nối STA
- *    [2] Kết nối STA:
- *          OK   → isConnected = 1, chạy bình thường
- *          FAIL → log lỗi, isConnected = 0
- *               → KHÔNG tự vào AP (người dùng giữ BOOT 10s để reset)
+ *  Flow:
+ *    [1] Read NVS:
+ *          Not found → SoftAP (first-time configuration)
+ *          Found     → connect STA
+ *    [2] Connect STA:
+ *          OK   → isConnected = 1, run normally
+ *          FAIL → log error, isConnected = 0
+ *               → Do NOT auto-enter AP (user holds BOOT 10s to reset)
  * ------------------------------------------------------- */
 void wifi_start(void)
 {
     if (s_wifi_event_group == NULL)
         s_wifi_event_group = xEventGroupCreate();
 
-    /* ---- [1] Đọc credentials từ NVS ---- */
+    /* ---- [1] Read credentials from NVS ---- */
     char nvs_ssid[33] = {0};
     char nvs_pass[65] = {0};
 
@@ -328,23 +336,23 @@ void wifi_start(void)
 
     if (nvs_err != ESP_OK || strlen(nvs_ssid) == 0)
     {
-        ESP_LOGW(TAG, "Chưa có WiFi credentials trong NVS.");
-        ESP_LOGW(TAG, ">>> Vào AP mode để cấu hình WiFi lần đầu <<<");
+        ESP_LOGW(TAG, "No WiFi credentials found in NVS.");
+        ESP_LOGW(TAG, ">>> Entering AP mode for initial WiFi configuration <<<");
         wifi_start_softap();
         return;
     }
 
     ESP_LOGI(TAG, "NVS credentials found → SSID='%s'", nvs_ssid);
 
-    /* ---- [2] Kết nối STA ---- */
+    /* ---- [2] Connect STA ---- */
     bool ok = wifi_connect_sta(nvs_ssid, nvs_pass);
 
     if (!ok)
     {
         ESP_LOGE(TAG, "==========================================================");
-        ESP_LOGE(TAG, " WiFi FAILED – không thể kết nối tới '%s'.", nvs_ssid);
-        ESP_LOGE(TAG, " Thiết bị tiếp tục chạy KHÔNG có WiFi.");
-        ESP_LOGE(TAG, " Để cấu hình lại: giữ nút BOOT >= %ds.",
+        ESP_LOGE(TAG, " WiFi FAILED – cannot connect to '%s'.", nvs_ssid);
+        ESP_LOGE(TAG, " Device will continue running WITHOUT WiFi.");
+        ESP_LOGE(TAG, " To reconfigure: hold BOOT button >= %ds.",
                  AP_TRIGGER_HOLD_MS / 1000);
         ESP_LOGE(TAG, "==========================================================");
     }

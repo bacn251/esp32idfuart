@@ -15,13 +15,13 @@
 #define ESP_MAXIMUM_RETRY  CONFIG_ESP_MAXIMUM_RETRY
 
 /* ---------- Boot-button AP trigger ----------
- *  GPIO0 là nút BOOT trên hầu hết dev-board ESP32.
- *  Giữ nút trong AP_TRIGGER_HOLD_MS ms ngay khi khởi động
- *  → xóa NVS credentials → vào AP mode để cấu hình lại WiFi.
+ *  GPIO0 is BOOT button on most ESP32 dev-boards.
+ *  Hold button for AP_TRIGGER_HOLD_MS ms right at startup
+ *  → clear NVS credentials → enter AP mode for WiFi reconfiguration.
  * ----------------------------------------- */
 #define BOOT_BUTTON_GPIO       0
-#define AP_TRIGGER_HOLD_MS  10000   /* 10 giây */
-#define AP_TRIGGER_POLL_MS     50   /* kiểm tra mỗi 50 ms */
+#define AP_TRIGGER_HOLD_MS  10000   /* 10 seconds */
+#define AP_TRIGGER_POLL_MS     50   /* check every 50 ms */
 
 /* ---------- WPA3 SAE mode ---------- */
 #if CONFIG_ESP_STATION_EXAMPLE_WPA3_SAE_PWE_HUNT_AND_PECK
@@ -62,7 +62,7 @@
 
 /* ---------- SoftAP config ---------- */
 #define SOFTAP_SSID       "ESP32-Config"
-#define SOFTAP_PASS       "12345678"   /* min 8 chars, dùng "" để open */
+#define SOFTAP_PASS       "12345678"   /* min 8 chars, use "" for open */
 #define SOFTAP_CHANNEL    1
 #define SOFTAP_MAX_CONN   4
 
@@ -78,32 +78,32 @@ extern int isAPMode;    /* 1 = running as SoftAP */
 /* ---------- Public API ---------- */
 
 /**
- * @brief  Kết nối WiFi khi boot.
+ * @brief  Connect WiFi on boot.
  *
- * Luồng:
- *  1. Đọc NVS:
- *       – Có credentials  → kết nối STA.
- *       – Không có        → vào SoftAP (cấu hình lần đầu).
- *  2. Kết nối STA:
- *       – Thành công → isConnected = 1, chạy bình thường.
- *       – Thất bại   → log lỗi, isConnected = 0.
- *         (KHÔNG tự vào AP – người dùng giữ BOOT để reset).
+ * Flow:
+ *  1. Read NVS:
+ *       – Has credentials  → connect STA.
+ *       – No credentials   → enter SoftAP (first-time configuration).
+ *  2. Connect STA:
+ *       – Success → isConnected = 1, run normally.
+ *       – Failure → log error, isConnected = 0.
+ *         (Do NOT auto-enter AP – user holds BOOT to reset).
  */
 void wifi_start(void);
 
 /**
- * @brief  Spawn background FreeRTOS task theo dõi nút BOOT (GPIO0).
+ * @brief  Spawn background FreeRTOS task monitoring BOOT button (GPIO0).
  *
- * Gọi 1 lần trong app_main() SAU wifi_start().
- * Hành vi:
- *  – Giữ nút >= AP_TRIGGER_HOLD_MS (mặc định 10s) BẤT KỲ LÚC NÀO
- *    → xóa WiFi credentials trong NVS → esp_restart()
- *    → boot lại, không có credentials → tự vào SoftAP.
- *  – Nhả trước khi đủ thời gian → huỷ, tiếp tục chạy bình thường.
+ * Call once in app_main() AFTER wifi_start().
+ * Behavior:
+ *  – Hold button >= AP_TRIGGER_HOLD_MS (default 10s) AT ANY TIME
+ *    → clear WiFi credentials in NVS → esp_restart()
+ *    → reboot without credentials → automatically enter SoftAP.
+ *  – Release before time elapsed → cancel, continue running normally.
  */
 void wifi_button_monitor_start(void);
 
-/** Khởi động SoftAP + HTTP config server (có thể gọi độc lập). */
+/** Start SoftAP + HTTP config server (can be called independently). */
 void wifi_start_softap(void);
 
 #endif /* WIFI_H */

@@ -168,7 +168,7 @@ static void uart_process_task(void *pvParameters)
                     if (c == '\n')
                     {
                         gps_buf[gps_len] = '\0';
-                        gps_process_line(gps_buf); // xử lý 1 line hoàn chỉnh
+                        gps_process_line(gps_buf); // process 1 complete line
                         gps_len = 0;
                     }
                     else if (c == '$')
@@ -195,7 +195,7 @@ static void uart_process_task(void *pvParameters)
                 ESP_LOG_BUFFER_HEX("data", pkt.data, pkt.len);
                 if (acc_len + pkt.len > RX_ACC_BUF_SIZE)
                 {
-                    acc_len = 0; // reset nếu overflow
+                    acc_len = 0; // reset if overflow
                 }
 
                 memcpy(&acc_buf[acc_len], pkt.data, pkt.len);
@@ -279,9 +279,9 @@ void app_main(void)
     ESP_ERROR_CHECK(ret);
 
     /* --- WiFi start:
-     *   - Có credentials trong NVS  → kết nối STA
-     *   - Chưa có credentials       → SoftAP config mode (lần đầu)
-     *   - Giữ BOOT >= 10s BẤT KỲ LÚC NÀO → xóa NVS → restart → SoftAP
+     *   - Has credentials in NVS   → connect STA
+     *   - No credentials yet        → SoftAP config mode (first time)
+     *   - Hold BOOT >= 10s AT ANY TIME → clear NVS → restart → SoftAP
      * --------------------------------------------------------------- */
     ESP_LOGI(APP_TAG, "Starting WiFi...");
     wifi_start();
@@ -290,13 +290,13 @@ void app_main(void)
         ESP_LOGI(APP_TAG, "[WiFi] Mode: STA  →  connected ✓");
     } else if (isAPMode) {
         ESP_LOGW(APP_TAG, "[WiFi] Mode: SoftAP  →  SSID: \"%s\"  IP: 192.168.4.1", SOFTAP_SSID);
-        ESP_LOGW(APP_TAG, "[WiFi] Truy cập http://192.168.4.1 để cấu hình WiFi.");
+        ESP_LOGW(APP_TAG, "[WiFi] Access http://192.168.4.1 to configure WiFi.");
     } else {
-        ESP_LOGE(APP_TAG, "[WiFi] Kết nối WiFi thất bại – giữ BOOT >= 10s để cấu hình lại.");
+        ESP_LOGE(APP_TAG, "[WiFi] WiFi connection failed – hold BOOT >= 10s to reconfigure.");
     }
 
-    /* --- Khởi động background task theo dõi nút BOOT ---
-     *  Giữ nút >= 10s → xóa NVS WiFi → restart → vào SoftAP
+    /* --- Start background task monitoring BOOT button ---
+     *  Hold button >= 10s → clear NVS WiFi → restart → enter SoftAP
      * ---------------------------------------------------- */
     wifi_button_monitor_start();
     uart_init_config(&uart_gps, GPS_UART_NUM, GPS_UART_BAUD_RATE, GPS_TXD_PIN, GPS_RXD_PIN, UART_ROLE_GPS);

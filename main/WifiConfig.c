@@ -52,22 +52,22 @@ static const char *HTML_CONFIG =
     "<body><div class='card'>"
     "<div class='logo'>&#x1F4F6;</div>"
     "<h1>ESP32 Wi-Fi Setup</h1>"
-    "<p class='sub'>Nhập thông tin mạng WiFi để kết nối</p>"
+    "<p class='sub'>Enter WiFi network information to connect</p>"
     "<form method='POST' action='/save'>"
-    "<label>&#x1F4E1; Tên mạng (SSID)</label>"
-    "<input type='text'     name='ssid' placeholder='VD: MyHomeWiFi'  required maxlength='32'>"
-    "<label>&#x1F512; Mật khẩu</label>"
-    "<input type='password' name='pass' placeholder='Mật khẩu WiFi'           maxlength='64'>"
-    "<button type='submit'>&#x1F4BE; Lưu &amp; Kết nối</button>"
+    "<label>&#x1F4E1; Network Name (SSID)</label>"
+    "<input type='text'     name='ssid' placeholder='Example: MyHomeWiFi'  required maxlength='32'>"
+    "<label>&#x1F512; Password</label>"
+    "<input type='password' name='pass' placeholder='WiFi Password'           maxlength='64'>"
+    "<button type='submit'>&#x1F4BE; Save &amp; Connect</button>"
     "</form>"
-    "<p class='tip'>Thiết bị sẽ tự động khởi động lại sau khi lưu.</p>"
+    "<p class='tip'>Device will automatically restart after saving.</p>"
     "</div></body></html>";
 
 static const char *HTML_SAVED =
     "<!DOCTYPE html><html><head>"
     "<meta charset='UTF-8'>"
     "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-    "<title>Đã lưu</title>"
+    "<title>Saved</title>"
     "<style>"
     "*{box-sizing:border-box;margin:0;padding:0}"
     "body{font-family:'Segoe UI',sans-serif;background:#0f0c29;"
@@ -86,15 +86,15 @@ static const char *HTML_SAVED =
     "</style></head>"
     "<body><div class='card'>"
     "<div class='icon'>&#x2705;</div>"
-    "<h2>Đã lưu thành công!</h2>"
-    "<p>ESP32 đang khởi động lại...<br>"
-    "Vui lòng chờ <span class='dot'></span></p>"
+    "<h2>Saved successfully!</h2>"
+    "<p>ESP32 is restarting...<br>"
+    "Please wait <span class='dot'></span></p>"
     "<p style='margin-top:14px;font-size:.8em;color:#666'>"
-    "Kết nối lại WiFi của bạn sau vài giây.</p>"
+    "Reconnect your WiFi in a few seconds.</p>"
     "</div></body></html>";
 
 /* -------------------------------------------------------
- * URL decode  (xử lý %XX và + → space)
+ * URL decode  (handle %XX and + → space)
  * ------------------------------------------------------- */
 static void url_decode(char *dst, const char *src, size_t max_len)
 {
@@ -121,7 +121,7 @@ static void url_decode(char *dst, const char *src, size_t max_len)
 }
 
 /* -------------------------------------------------------
- * GET /  →  trang nhập SSID/pass
+ * GET /  →  input page for SSID/password
  * ------------------------------------------------------- */
 static esp_err_t get_root_handler(httpd_req_t *req)
 {
@@ -131,7 +131,7 @@ static esp_err_t get_root_handler(httpd_req_t *req)
 }
 
 /* -------------------------------------------------------
- * POST /save  →  parse form, lưu NVS, restart
+ * POST /save  →  parse form, save NVS, restart
  * ------------------------------------------------------- */
 static esp_err_t post_save_handler(httpd_req_t *req)
 {
@@ -179,7 +179,7 @@ static esp_err_t post_save_handler(httpd_req_t *req)
 
     if (strlen(ssid) == 0)
     {
-        const char *err_msg = "SSID khong duoc de trong!";
+        const char *err_msg = "SSID cannot be empty!";
         httpd_resp_set_status(req, "400 Bad Request");
         httpd_resp_send(req, err_msg, HTTPD_RESP_USE_STRLEN);
         return ESP_FAIL;
@@ -188,11 +188,11 @@ static esp_err_t post_save_handler(httpd_req_t *req)
     ESP_LOGI(TAG_CFG, "Saving credentials → SSID: '%s'", ssid);
     wifi_nvs_save_credentials(ssid, pass);
 
-    /* Gửi trang thành công */
+    /* Send success page */
     httpd_resp_set_type(req, "text/html; charset=utf-8");
     httpd_resp_send(req, HTML_SAVED, HTTPD_RESP_USE_STRLEN);
 
-    /* Restart sau 2 giây để trình duyệt nhận response */
+    /* Restart after 2 seconds for browser to receive response */
     vTaskDelay(pdMS_TO_TICKS(2000));
     esp_restart();
     return ESP_OK;
@@ -279,7 +279,7 @@ esp_err_t wifi_nvs_load_credentials(char *ssid, size_t ssid_len,
     nvs_handle_t h;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &h);
     if (err != ESP_OK)
-        return err; /* chưa có namespace → chưa lưu lần nào */
+        return err; /* no namespace yet → never saved before */
 
     err = nvs_get_str(h, NVS_KEY_SSID, ssid, &ssid_len);
     if (err != ESP_OK)
