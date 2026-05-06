@@ -278,18 +278,27 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
-    /* --- WiFi init & connect (fallback to SoftAP on failure) --- */
-    ESP_LOGI(APP_TAG, "Initialising WiFi...");
-    wifi_init_sta();
+    /* --- WiFi start:
+     *   - Có credentials trong NVS  → kết nối STA
+     *   - Chưa có credentials       → SoftAP config mode (lần đầu)
+     *   - Giữ BOOT >= 10s BẤT KỲ LÚC NÀO → xóa NVS → restart → SoftAP
+     * --------------------------------------------------------------- */
+    ESP_LOGI(APP_TAG, "Starting WiFi...");
+    wifi_start();
 
     if (isConnected) {
-        ESP_LOGI(APP_TAG, "[WiFi] Mode: STA  →  connected to \"%s\"", ESP_WIFI_SSID);
+        ESP_LOGI(APP_TAG, "[WiFi] Mode: STA  →  connected ✓");
     } else if (isAPMode) {
         ESP_LOGW(APP_TAG, "[WiFi] Mode: SoftAP  →  SSID: \"%s\"  IP: 192.168.4.1", SOFTAP_SSID);
-        ESP_LOGW(APP_TAG, "[WiFi] Connect to \"%s\" to configure device.", SOFTAP_SSID);
+        ESP_LOGW(APP_TAG, "[WiFi] Truy cập http://192.168.4.1 để cấu hình WiFi.");
     } else {
-        ESP_LOGE(APP_TAG, "[WiFi] Unexpected state – no STA and no AP!");
+        ESP_LOGE(APP_TAG, "[WiFi] Kết nối WiFi thất bại – giữ BOOT >= 10s để cấu hình lại.");
     }
+
+    /* --- Khởi động background task theo dõi nút BOOT ---
+     *  Giữ nút >= 10s → xóa NVS WiFi → restart → vào SoftAP
+     * ---------------------------------------------------- */
+    wifi_button_monitor_start();
     uart_init_config(&uart_gps, GPS_UART_NUM, GPS_UART_BAUD_RATE, GPS_TXD_PIN, GPS_RXD_PIN, UART_ROLE_GPS);
     uart_init_config(&uart_modbus, MODBUS_UART_NUM, MODBUS_UART_BAUD_RATE, MODBUS_TXD_PIN, MODBUS_RXD_PIN, UART_ROLE_MODBUS);
     xTaskCreate(uart_event_task, "uart_gps_event_task", 3072, &uart_gps, 12, NULL);
