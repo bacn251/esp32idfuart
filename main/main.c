@@ -35,11 +35,13 @@ static const char *APP_TAG = "APP_MAIN";
 #define MQTT_BROKER_URL "mqtt://broker.emqx.io:1883"
 #define MQTT_PUB_HUM "esp32/dht/temperature"
 #define MQTT_PUB_TEMP "esp32/dht/humidity"
+#define MQTT_SUB_TOPIC "esp32/command"
 static esp_mqtt_client_handle_t mqtt_client;
 #define MQTT_CONNECTED_BIT BIT1
 #define BUF_SIZE (1024)
 static const char *TAG = "esp-dht-station";
 // static EventGroupHandle_t s_wifi_event_group;
+static int mqtt_subscribed = 0; // Global flag to track subscription state
 
 // ---- QoS 1 ACK tracking ------------------------------------------------
 #define MQTT_PENDING_MAX 8           // max in-flight QoS-1 messages
@@ -140,7 +142,15 @@ typedef struct
 } uart_ctx_t;
 uart_ctx_t uart_gps;
 uart_ctx_t uart_modbus;
-
+typedef struct
+{
+    char topic[64];
+    char payload[128];
+    int qos;
+    int retain;
+} mqtt_message_t;
+// mqtt_message_t mqtt_msg;
+QueueHandle_t SubQueue;
 // void ledConfig(void)
 // {
 //     gpio_reset_pin(LED_NUM);
@@ -157,11 +167,13 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
     {
     case MQTT_EVENT_CONNECTED:
         ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
+        esp_mqtt_client_subscribe(mqtt_client, MQTT_SUB_TOPIC, 1);
         xEventGroupSetBits(s_wifi_event_group, MQTT_CONNECTED_BIT);
         break;
     case MQTT_EVENT_DISCONNECTED:
         ESP_LOGI(TAG, "MQTT_EVENT_DISCONNECTED");
         xEventGroupClearBits(s_wifi_event_group, MQTT_CONNECTED_BIT);
+        mqtt_subscribed = 0; // Reset subscription flag to re-subscribe on reconnect
         xEventGroupWaitBits( // Wait for WIFI to reconnect
             s_wifi_event_group,
             WIFI_CONNECTED_BIT,
@@ -185,8 +197,22 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         break;
     case MQTT_EVENT_DATA:
         ESP_LOGI(TAG, "MQTT_EVENT_DATA");
-        printf("TOPIC=%.*s\r\n", event->topic_len, event->topic);
-        printf("DATA=%.*s\r\n", event->data_len, event->data);
+        mqtt_message_t msg;
+        msg.qos = event->qos;
+        msg.retain = event->retain;
+        snprintf(msg.topic, sizeof(msg.topic), "%.*s", event->topic_len, event->topic);
+        snprintf(msg.payload, sizeof(msg.payload), "%.*s", event->data_len, event->data);
+        xQueueSend(SubQueue, &msg, portMAX_DELAY);
+        // printf("TOPIC=%.*s\r\n", event->topic_len, event->topic);
+        // printf("DATA=%.*s\r\n", event->data_len, event->data);
+        // printf("QOS=%d\r\n", event->qos);
+        // printf("RETAIN=%d\r\n", event->retain);
+        // Handle command from subscribe
+        // if (strncmp(event->topic, MQTT_SUB_TOPIC, event->topic_len) == 0)
+        // {
+        //     ESP_LOGI(TAG, "Received command: %.*s", event->data_len, event->data);
+        //     // TODO: Process command here
+        // }
         break;
     case MQTT_EVENT_ERROR:
         ESP_LOGI(TAG, "MQTT_EVENT_ERROR");
@@ -225,6 +251,14 @@ void DHT_task(void *pvParameter)
             pdFALSE,
             pdFALSE,
             portMAX_DELAY);
+
+        // Subscribe to topic after MQTT connected (re-subscribe on reconnect)
+        // if (!mqtt_subscribed)
+        // {
+        //     int msg_id =
+        //     ESP_LOGI(TAG, "Subscribed to %s (msg_id=%d)", MQTT_SUB_TOPIC, msg_id);
+        //     mqtt_subscribed = 1;
+        // }
 
         ESP_LOGI(TAG, "Reading DHT");
         // int ret = readDHT();
@@ -459,6 +493,21 @@ static void uart_process_task(void *pvParameters)
         }
     }
 }
+static void MQTT_Task(void *pvParameters)
+{
+    mqtt_message_t msg;
+    while (1)
+    {
+        if (xQueueReceive(SubQueue, &msg, portMAX_DELAY) == pdTRUE)
+        {
+            ESP_LOGI(TAG, "Processing message on topic: %s", msg.topic);
+            ESP_LOGI(TAG, "Message payload: %s", msg.payload);
+            ESP_LOGI(TAG, "Message QoS: %d", msg.qos);
+            ESP_LOGI(TAG, "Message Retain: %d", msg.retain);
+            // TODO: Process the received message
+        }
+    }
+}
 void app_main(void)
 {
     ESP_LOGI(APP_TAG, "========== Application Started ==========");
@@ -504,6 +553,7 @@ void app_main(void)
     /* --- Start background task monitoring BOOT button ---
      *  Hold button >= 10s → clear NVS WiFi → restart → enter SoftAP
      * ---------------------------------------------------- */
+    SubQueue = xQueueCreate(10, sizeof(mqtt_message_t));
     wifi_button_monitor_start();
     pending_init();
     mqtt_app_start();
@@ -514,6 +564,6 @@ void app_main(void)
 
     xTaskCreate(uart_event_task, "uart_modbus_event_task", 3072, &uart_modbus, 12, NULL);
     xTaskCreate(uart_process_task, "uart_modbus_process_task", 8192, &uart_modbus, 11, NULL);
-
     xTaskCreate(&DHT_task, "DHT_task", 2048, NULL, 5, NULL);
+    xTaskCreate(&MQTT_Task, "mqtt_event_handler", 4096, NULL, 10, NULL);
 }
