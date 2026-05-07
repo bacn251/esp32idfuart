@@ -14,5 +14,6 @@ idf_component_register(
         esp_event
         esp_netif
         lwip
+        mqtt
     INCLUDE_DIRS "."
 )
