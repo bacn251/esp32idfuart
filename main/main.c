@@ -151,6 +151,61 @@ typedef struct
 } mqtt_message_t;
 // mqtt_message_t mqtt_msg;
 QueueHandle_t SubQueue;
+
+// ---- LED Control ------------------------------------------------
+static void led_init(void)
+{
+    gpio_reset_pin(LED_NUM);
+    gpio_set_direction(LED_NUM, GPIO_MODE_OUTPUT);
+    ESP_LOGI(TAG, "LED initialized on GPIO %d", LED_NUM);
+}
+
+static void led_control(int state)
+{
+    if (state)
+    {
+        gpio_set_level(LED_NUM, LED_ACTIVE_LEVEL);
+        ESP_LOGI(TAG, "LED ON");
+    }
+    else
+    {
+        gpio_set_level(LED_NUM, !LED_ACTIVE_LEVEL);
+        ESP_LOGI(TAG, "LED OFF");
+    }
+}
+
+// Parse JSON command: { "state": 1 }
+static void parse_mqtt_command(const char *payload)
+{
+    // Simple JSON parsing (no external library needed)
+    // Looking for "state": 0 or "state": 1
+    const char *state_ptr = strstr(payload, "\"state\"");
+    if (state_ptr == NULL)
+    {
+        ESP_LOGW(TAG, "No 'state' field found in command");
+        return;
+    }
+
+    // Find the colon and value after "state"
+    state_ptr = strchr(state_ptr, ':');
+    if (state_ptr == NULL)
+    {
+        return;
+    }
+    state_ptr++;
+
+    // Skip whitespace
+    while (*state_ptr == ' ' || *state_ptr == '\t')
+    {
+        state_ptr++;
+    }
+
+    // Parse value (0 or 1)
+    int value = atoi(state_ptr);
+    ESP_LOGI(TAG, "Parsed state value: %d", value);
+    led_control(value);
+}
+// ---------------------------------------------------------------
 // void ledConfig(void)
 // {
 //     gpio_reset_pin(LED_NUM);
@@ -270,7 +325,7 @@ void DHT_task(void *pvParameter)
         ESP_LOGI(TAG, "Hum %s\n", hum);
         ESP_LOGI(TAG, "Tmp %s\n", temp);
 
-        int msg_id = esp_mqtt_client_publish(mqtt_client, MQTT_PUB_HUM, hum, 0, 2, 1);
+        int msg_id = esp_mqtt_client_publish(mqtt_client, MQTT_PUB_HUM, hum, 0, 0, 1);
         if (msg_id < 0)
         {
             ESP_LOGE(TAG, "[QoS1] Publish FAILED (humidity) – broker not ready?");
@@ -280,7 +335,7 @@ void DHT_task(void *pvParameter)
             pending_add(msg_id, MQTT_PUB_HUM);
         }
 
-        msg_id = esp_mqtt_client_publish(mqtt_client, MQTT_PUB_TEMP, temp, 0, 1, 0);
+        msg_id = esp_mqtt_client_publish(mqtt_client, MQTT_PUB_TEMP, temp, 0, 0, 0);
         if (msg_id < 0)
         {
             ESP_LOGE(TAG, "[QoS1] Publish FAILED (temperature) – broker not ready?");
@@ -295,7 +350,7 @@ void DHT_task(void *pvParameter)
 
         // -- wait at least 2 sec before reading again ------------
         // The interval of whole process must be beyond 2 seconds !!
-        vTaskDelay(10000 / portTICK_PERIOD_MS);
+        vTaskDelay(10000); 
     }
 }
 void uart_init_config(uart_ctx_t *ctx, uart_port_t uart_num, int baud, int tx_pin, int rx_pin, uart_role_t role)
@@ -502,9 +557,14 @@ static void MQTT_Task(void *pvParameters)
         {
             ESP_LOGI(TAG, "Processing message on topic: %s", msg.topic);
             ESP_LOGI(TAG, "Message payload: %s", msg.payload);
-            ESP_LOGI(TAG, "Message QoS: %d", msg.qos);
-            ESP_LOGI(TAG, "Message Retain: %d", msg.retain);
-            // TODO: Process the received message
+            ESP_LOGI(TAG, "Message QoS: %d, Retain: %d", msg.qos, msg.retain);
+
+            // Check if message is from command topic
+            if (strncmp(msg.topic, MQTT_SUB_TOPIC, 64) == 0)
+            {
+                // Parse JSON command and control LED
+                parse_mqtt_command(msg.payload);
+            }
         }
     }
 }
@@ -554,6 +614,7 @@ void app_main(void)
      *  Hold button >= 10s → clear NVS WiFi → restart → enter SoftAP
      * ---------------------------------------------------- */
     SubQueue = xQueueCreate(10, sizeof(mqtt_message_t));
+    led_init();
     wifi_button_monitor_start();
     pending_init();
     mqtt_app_start();
