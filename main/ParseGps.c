@@ -141,6 +141,9 @@ static void handle_rmc(const char *s, char **tok, int count)
     gps.month = (tok[9][2] - '0') * 10 + (tok[9][3] - '0');
     gps.year = 2000 + (tok[9][4] - '0') * 10 + (tok[9][5] - '0');
 
+    // freshness: stamp tick so publisher can detect stale data
+    gps.last_update_tick = xTaskGetTickCount();
+
     ESP_LOGI("GPS", "RMC: %.6f %s, %.6f %s, %.2f knots",
              gps.latitude, tok[4],
              gps.longitude, tok[6],

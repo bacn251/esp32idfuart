@@ -32,10 +32,13 @@ static const char *APP_TAG = "APP_MAIN";
 #define GPS_RXD_PIN CONFIG_GPS_APP_UART_RX_PIN
 #define MODBUS_TXD_PIN CONFIG_MODBUS_APP_UART_TX_PIN
 #define MODBUS_RXD_PIN CONFIG_MODBUS_APP_UART_RX_PIN
-#define MQTT_BROKER_URL "mqtt://broker.emqx.io:1883"
-#define MQTT_PUB_HUM "esp32/dht/temperature"
-#define MQTT_PUB_TEMP "esp32/dht/humidity"
-#define MQTT_SUB_TOPIC "esp32/command"
+#define MQTT_BROKER_URL     "mqtt://broker.emqx.io:1883"
+#define MQTT_PUB_HUM        "esp32/dht/temperature"
+#define MQTT_PUB_TEMP       "esp32/dht/humidity"
+#define MQTT_SUB_TOPIC      "esp32/command"
+#define MQTT_PUB_GPS        "esp32/gps"          // GPS topic
+#define GPS_PUB_INTERVAL_MS 5000                 // publish every 5 s
+#define GPS_STALE_MS        10000                // data older than this is considered stale
 static esp_mqtt_client_handle_t mqtt_client;
 #define MQTT_CONNECTED_BIT BIT1
 #define BUF_SIZE (1024)
@@ -145,7 +148,7 @@ uart_ctx_t uart_modbus;
 typedef struct
 {
     char topic[64];
-    char payload[128];
+    char payload[256];   // enlarged to fit GPS JSON
     int qos;
     int retain;
 } mqtt_message_t;
@@ -568,6 +571,90 @@ static void MQTT_Task(void *pvParameters)
         }
     }
 }
+
+// ---- GPS MQTT Publish Task -----------------------------------------------
+static void GPS_Publish_Task(void *pvParameters)
+{
+    char payload[256];
+    ESP_LOGI(TAG, "GPS Publish Task started – interval %d ms, stale timeout %d ms",
+             GPS_PUB_INTERVAL_MS, GPS_STALE_MS);
+
+    while (1)
+    {
+        /* Wait until MQTT is connected */
+        xEventGroupWaitBits(
+            s_wifi_event_group,
+            MQTT_CONNECTED_BIT,
+            pdFALSE,
+            pdFALSE,
+            portMAX_DELAY);
+
+        /* Check freshness: how long since last valid RMC sentence */
+        TickType_t age_ticks = xTaskGetTickCount() - gps.last_update_tick;
+        uint32_t   age_ms    = age_ticks * portTICK_PERIOD_MS;
+        bool       is_fresh  = (age_ms < GPS_STALE_MS);
+
+        /* Only publish when GPS has a valid fix AND data is fresh */
+        if (gps.valid && gps.fix_quality > 0 && is_fresh)
+        {
+            /* Build compact JSON payload */
+            int len = snprintf(payload, sizeof(payload),
+                "{\"lat\":%.6f,"
+                "\"lon\":%.6f,"
+                "\"speed_kmh\":%.2f,"
+                "\"course\":%.1f,"
+                "\"alt\":%.1f,"
+                "\"sats\":%d,"
+                "\"fix\":%d,"
+                "\"time\":\"%02d:%02d:%02d\","
+                "\"date\":\"%04d-%02d-%02d\"}",
+                gps.latitude,
+                gps.longitude,
+                gps.speed_knots * 1.852f,   /* knots → km/h */
+                gps.course,
+                gps.altitude,
+                gps.satellites,
+                gps.fix_quality,
+                gps.hour, gps.minute, gps.second,
+                gps.year, gps.month, gps.day);
+
+            if (len <= 0 || len >= (int)sizeof(payload))
+            {
+                ESP_LOGE(TAG, "[GPS] Payload format error");
+            }
+            else
+            {
+                int msg_id = esp_mqtt_client_publish(
+                    mqtt_client, MQTT_PUB_GPS, payload, len, 1, 0);
+                if (msg_id < 0)
+                {
+                    ESP_LOGE(TAG, "[GPS] Publish FAILED");
+                }
+                else
+                {
+                    pending_add(msg_id, MQTT_PUB_GPS);
+                    ESP_LOGI(TAG, "[GPS] Published (msg_id=%d): %s", msg_id, payload);
+                }
+            }
+        }
+        else if (!is_fresh)
+        {
+            /* Data exists but is stale – do NOT republish old coordinates */
+            ESP_LOGW(TAG, "[GPS] Stale data – no publish (age=%lums, limit=%dms)",
+                     (unsigned long)age_ms, GPS_STALE_MS);
+        }
+        else
+        {
+            /* GPS struct never had a fix yet (last_update_tick == 0 or invalid) */
+            ESP_LOGW(TAG, "[GPS] No valid fix – skipping publish (valid=%d fix=%d)",
+                     gps.valid, gps.fix_quality);
+        }
+
+        pending_check_timeouts();
+        vTaskDelay(pdMS_TO_TICKS(GPS_PUB_INTERVAL_MS));
+    }
+}
+// --------------------------------------------------------------------------
 void app_main(void)
 {
     ESP_LOGI(APP_TAG, "========== Application Started ==========");
@@ -620,11 +707,13 @@ void app_main(void)
     mqtt_app_start();
     uart_init_config(&uart_gps, GPS_UART_NUM, GPS_UART_BAUD_RATE, GPS_TXD_PIN, GPS_RXD_PIN, UART_ROLE_GPS);
     uart_init_config(&uart_modbus, MODBUS_UART_NUM, MODBUS_UART_BAUD_RATE, MODBUS_TXD_PIN, MODBUS_RXD_PIN, UART_ROLE_MODBUS);
-    xTaskCreate(uart_event_task, "uart_gps_event_task", 3072, &uart_gps, 12, NULL);
-    xTaskCreate(uart_process_task, "uart_gps_process_task", 8192, &uart_gps, 11, NULL);
+    xTaskCreate(uart_event_task,   "uart_gps_event_task",    3072, &uart_gps,    12, NULL);
+    xTaskCreate(uart_process_task, "uart_gps_process_task",  8192, &uart_gps,    11, NULL);
 
-    xTaskCreate(uart_event_task, "uart_modbus_event_task", 3072, &uart_modbus, 12, NULL);
-    xTaskCreate(uart_process_task, "uart_modbus_process_task", 8192, &uart_modbus, 11, NULL);
-    xTaskCreate(&DHT_task, "DHT_task", 2048, NULL, 5, NULL);
-    xTaskCreate(&MQTT_Task, "mqtt_event_handler", 4096, NULL, 10, NULL);
+    xTaskCreate(uart_event_task,   "uart_mb_event_task",     3072, &uart_modbus, 12, NULL);
+    xTaskCreate(uart_process_task, "uart_mb_process_task",   8192, &uart_modbus, 11, NULL);
+
+    xTaskCreate(&DHT_task,          "DHT_task",       2048, NULL, 5,  NULL);
+    xTaskCreate(&MQTT_Task,         "mqtt_sub_task",  4096, NULL, 10, NULL);
+    xTaskCreate(&GPS_Publish_Task,  "gps_pub_task",   4096, NULL, 7,  NULL);
 }

@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include "freertos/FreeRTOS.h"
 #define GPS_BUF_SIZE 256
 bool gps_validate_checksum(const char *nmea_sentence);
 typedef struct
@@ -21,6 +22,7 @@ typedef struct
     int satellites;
     float altitude;
     bool valid;
+    TickType_t last_update_tick; /**< xTaskGetTickCount() when last valid RMC received */
 } gps_data_t;
 extern gps_data_t gps;
 void gps_process_line(const char *line);
